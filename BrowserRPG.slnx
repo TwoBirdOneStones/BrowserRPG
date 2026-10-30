@@ -1,0 +1,5 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/BrowserRPG.Web/BrowserRPG.Web.csproj" />
+  </Folder>
+</Solution>
