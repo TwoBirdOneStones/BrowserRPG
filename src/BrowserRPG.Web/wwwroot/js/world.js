@@ -1,6 +1,17 @@
 
 const TILE_SIZE = 32;
-const WALK_SPEED = 4; // Tiles per second.
+
+// Physics values are measured in blocks and seconds.
+const WALK_SPEED = 4;
+const GRAVITY = 28;
+const JUMP_SPEED = 10;
+const MAX_FALL_SPEED = 18;
+const FIXED_DT = 1 / 60;
+
+// Player collision dimensions, in blocks.
+const PLAYER_HALF_WIDTH = 0.28;
+const PLAYER_HEIGHT = 1.6;
+const EPSILON = 0.0001;
 
 let stopCurrentWorld = null;
 
@@ -9,40 +20,71 @@ export function start(canvas, width, height, tiles) {
 
     const ctx = canvas.getContext("2d");
 
-    if (!ctx)
+    if (!ctx) {
         throw new Error("Canvas 2D is unavailable.");
-
-    // 0 = Air, 1 = Grass, 2 = Dirt, 3 = Stone
-    const blocks = new Uint8Array(tiles);
-
-    const surface = new Array(width);
-
-    // Wrap any X coordinate into the world.
-    const wrap = x => ((x % width) + width) % width;
-
-    // Find the surface of each world column.
-    for (let x = 0; x < width; x++) {
-        surface[x] = height - 1;
-
-        for (let y = 0; y < height; y++) {
-            if (blocks[y * width + x] === 1) {
-                surface[x] = y;
-                break;
-            }
-        }
     }
 
-    // Smooth the character's height between columns.
-    const surfaceAt = x => {
-        const left = Math.floor(x);
-        const t = x - left;
+    const blocks = new Uint8Array(tiles);
 
-        return surface[wrap(left)] * (1 - t)
-             + surface[wrap(left + 1)] * t;
+    const wrapX = x => ((x % width) + width) % width;
+
+    function getBlock(x, y) {
+        if (y < 0) return 0;      // Air above world
+        if (y >= height) return 3; // Solid bottom boundary
+
+        return blocks[y * width + wrapX(x)];
+    }
+
+    function isSolid(x, y) {
+        return getBlock(x, y) !== 0;
+    }
+
+    // Test the player's AABB against nearby blocks.
+    function collides(x, feetY) {
+        const minX = Math.floor(
+            x - PLAYER_HALF_WIDTH + EPSILON
+        );
+        const maxX = Math.floor(
+            x + PLAYER_HALF_WIDTH - EPSILON
+        );
+
+        const minY = Math.floor(
+            feetY - PLAYER_HEIGHT + EPSILON
+        );
+        const maxY = Math.floor(feetY - EPSILON);
+
+        for (let ty = minY; ty <= maxY; ty++) {
+            for (let tx = minX; tx <= maxX; tx++) {
+                if (isSolid(tx, ty)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    // Find the ground for the initial spawn.
+    function findSpawnY(x) {
+        for (let y = 0; y < height; y++) {
+            if (isSolid(Math.floor(x), y)) {
+                return y;
+            }
+        }
+
+        return height;
+    }
+
+    const player = {
+        x: 6.5,
+        y: findSpawnY(6.5),
+        vy: 0,
+        grounded: true
     };
 
-    let playerX = 6;
     let destinationX = null;
+    let destinationY = null;
+    let jumpQueued = false;
 
     let cameraX = 0;
     let cameraY = 0;
@@ -51,13 +93,16 @@ export function start(canvas, width, height, tiles) {
     let viewHeight = 1;
 
     let frameId = 0;
-    let lastFrameTime = performance.now();
+    let lastTime = performance.now();
+    let accumulator = 0;
 
     const heldKeys = new Set();
 
     function resize() {
         const rect = canvas.getBoundingClientRect();
-        const scale = Math.min(window.devicePixelRatio || 1, 2);
+        const scale = Math.min(
+            window.devicePixelRatio || 1, 2
+        );
 
         viewWidth = rect.width;
         viewHeight = rect.height;
@@ -72,12 +117,30 @@ export function start(canvas, width, height, tiles) {
     function onKeyDown(event) {
         const key = event.key.toLowerCase();
 
-        if (!["a", "d", "arrowleft", "arrowright"].includes(key))
-            return;
+        const allowed = [
+            "a", "d", "w",
+            "arrowleft", "arrowright", "arrowup",
+            " "
+        ];
 
-        if (["INPUT", "TEXTAREA"].includes(
-            document.activeElement?.tagName))
+        if (!allowed.includes(key)) return;
+
+        const active = document.activeElement;
+
+        if (
+            ["INPUT", "TEXTAREA", "SELECT", "BUTTON"]
+                .includes(active?.tagName) ||
+            active?.isContentEditable
+        ) {
             return;
+        }
+
+        const jumpKey = ["w", "arrowup", " "].includes(key);
+
+        // Queue jump once per key press.
+        if (jumpKey && !heldKeys.has(key)) {
+            jumpQueued = true;
+        }
 
         heldKeys.add(key);
         event.preventDefault();
@@ -93,139 +156,244 @@ export function start(canvas, width, height, tiles) {
 
         const rect = canvas.getBoundingClientRect();
 
-        destinationX =
-            (event.clientX - rect.left + cameraX) / TILE_SIZE;
+        destinationX = (
+            event.clientX - rect.left + cameraX
+        ) / TILE_SIZE;
+
+        destinationY = (
+            event.clientY - rect.top + cameraY
+        ) / TILE_SIZE;
 
         canvas.focus();
     }
 
+    // Move on only one axis at a time.
+    // Small increments prevent skipping through blocks.
+    function moveAxis(axis, amount) {
+        if (amount === 0) return false;
+
+        const steps = Math.ceil(Math.abs(amount) / 0.04);
+        const step = amount / steps;
+
+        for (let i = 0; i < steps; i++) {
+            const nextX = player.x +
+                (axis === "x" ? step : 0);
+
+            const nextY = player.y +
+                (axis === "y" ? step : 0);
+
+            if (collides(nextX, nextY)) {
+                return true;
+            }
+
+            player.x = nextX;
+            player.y = nextY;
+        }
+
+        return false;
+    }
+
+    function update(dt) {
+        const right = heldKeys.has("d") ||
+                      heldKeys.has("arrowright");
+
+        const left = heldKeys.has("a") ||
+                     heldKeys.has("arrowleft");
+
+        let direction = Number(right) - Number(left);
+
+        if (direction !== 0) {
+            // Manual movement overrides click-to-move.
+            destinationX = null;
+            destinationY = null;
+        }
+        else if (destinationX !== null) {
+            const delta = destinationX - player.x;
+
+            if (Math.abs(delta) < 0.04) {
+                destinationX = null;
+                destinationY = null;
+            }
+            else {
+                direction = Math.sign(delta);
+            }
+        }
+
+        // Horizontal movement and collision.
+        const previousX = player.x;
+
+        const hitWall = moveAxis(
+            "x", direction * WALK_SPEED * dt
+        );
+
+        if (hitWall) {
+            destinationX = null;
+            destinationY = null;
+        }
+
+        // Stop click-to-move at the destination.
+        if (destinationX !== null) {
+            const reached =
+                (direction > 0 && player.x >= destinationX) ||
+                (direction < 0 && player.x <= destinationX);
+
+            if (reached) {
+                if (!collides(destinationX, player.y)) {
+                    player.x = destinationX;
+                } else {
+                    player.x = previousX;
+                }
+
+                destinationX = null;
+                destinationY = null;
+            }
+        }
+
+        // Jumping.
+        if (jumpQueued && player.grounded) {
+            player.vy = -JUMP_SPEED;
+            player.grounded = false;
+        }
+
+        jumpQueued = false;
+
+        // Apply gravity.
+        player.vy = Math.min(
+            player.vy + GRAVITY * dt,
+            MAX_FALL_SPEED
+        );
+
+        const falling = player.vy >= 0;
+
+        // Vertical movement and collision.
+        const hitVertical = moveAxis(
+            "y", player.vy * dt
+        );
+
+        if (hitVertical) {
+            player.vy = 0;
+        }
+
+        // Check for ground immediately beneath the feet.
+        player.grounded = falling &&
+            collides(player.x, player.y + 0.05);
+    }
+
     function draw() {
-        // Draw the sky.
         ctx.fillStyle = "#8fcbe8";
         ctx.fillRect(0, 0, viewWidth, viewHeight);
 
-        // Calculate only the visible tile range.
         const minX = Math.floor(cameraX / TILE_SIZE) - 1;
-        const maxX =
-            Math.ceil((cameraX + viewWidth) / TILE_SIZE) + 1;
+        const maxX = Math.ceil(
+            (cameraX + viewWidth) / TILE_SIZE
+        ) + 1;
 
         const minY = Math.max(
             0, Math.floor(cameraY / TILE_SIZE) - 1
         );
-
         const maxY = Math.min(
             height - 1,
             Math.ceil((cameraY + viewHeight) / TILE_SIZE) + 1
         );
 
-        // Draw visible blocks.
+        // Render only visible terrain.
         for (let y = minY; y <= maxY; y++) {
             for (let x = minX; x <= maxX; x++) {
-                const block = blocks[y * width + wrap(x)];
+                const block = getBlock(x, y);
 
-                if (block === 0)
-                    continue;
+                if (block === 0) continue;
 
-                const screenX = x * TILE_SIZE - cameraX;
-                const screenY = y * TILE_SIZE - cameraY;
+                const sx = x * TILE_SIZE - cameraX;
+                const sy = y * TILE_SIZE - cameraY;
 
-                ctx.fillStyle =
-                    block === 3 ? "#73818a" : "#855b3d";
+                ctx.fillStyle = block === 3
+                    ? "#73818a"
+                    : "#855b3d";
 
                 ctx.fillRect(
-                    screenX, screenY,
-                    TILE_SIZE + 0.3, TILE_SIZE + 0.3
+                    sx, sy, TILE_SIZE + 0.3, TILE_SIZE + 0.3
                 );
 
-                // Grass top.
                 if (block === 1) {
                     ctx.fillStyle = "#5bad55";
-                    ctx.fillRect(screenX, screenY, TILE_SIZE, 8);
+                    ctx.fillRect(sx, sy, TILE_SIZE, 8);
                 }
             }
         }
 
-        // Show the click-to-move destination.
+        // Click/tap destination marker.
         if (destinationX !== null) {
-            const destScreenX =
-                destinationX * TILE_SIZE - cameraX;
-
-            const destScreenY =
-                surfaceAt(destinationX) * TILE_SIZE - cameraY;
-
             ctx.strokeStyle = "#ffe266";
             ctx.lineWidth = 3;
+
             ctx.beginPath();
             ctx.arc(
-                destScreenX, destScreenY - 10,
+                destinationX * TILE_SIZE - cameraX,
+                destinationY * TILE_SIZE - cameraY,
                 8, 0, Math.PI * 2
             );
             ctx.stroke();
         }
 
-        // Draw a simple player character.
-        const px = playerX * TILE_SIZE - cameraX;
-        const feetY = surfaceAt(playerX) * TILE_SIZE - cameraY;
+        // Draw player using its physics position.
+        const px = player.x * TILE_SIZE - cameraX;
+        const py = player.y * TILE_SIZE - cameraY;
 
-        // Body
+        const bodyWidth = PLAYER_HALF_WIDTH * 2 * TILE_SIZE;
+        const bodyHeight = PLAYER_HEIGHT * TILE_SIZE;
+
+        const left = px - bodyWidth / 2;
+        const top = py - bodyHeight;
+
         ctx.fillStyle = "#315baf";
-        ctx.fillRect(px - 10, feetY - 31, 20, 31);
+        ctx.fillRect(
+            left, top + 18,
+            bodyWidth, bodyHeight - 18
+        );
 
-        // Head
         ctx.fillStyle = "#f0c29a";
-        ctx.fillRect(px - 10, feetY - 49, 20, 18);
+        ctx.fillRect(left, top, bodyWidth, 18);
 
-        // Eye
         ctx.fillStyle = "#292521";
-        ctx.fillRect(px + 3, feetY - 42, 3, 3);
+        ctx.fillRect(left + bodyWidth - 6, top + 7, 3, 3);
 
-        // Debug coordinates.
+        // Debug information.
         ctx.font = "14px monospace";
         ctx.fillStyle = "#142434";
+
         ctx.fillText(
-            `World X: ${wrap(Math.floor(playerX))} / ${width}`,
+            `X: ${wrapX(Math.floor(player.x))}  ` +
+            `Y: ${player.y.toFixed(2)}`,
             12, 24
+        );
+
+        ctx.fillText(
+            `Grounded: ${player.grounded}  ` +
+            `Velocity Y: ${player.vy.toFixed(2)}`,
+            12, 44
         );
     }
 
     function frame(now) {
-        const dt = Math.min(
-            (now - lastFrameTime) / 1000, 0.05
+        const elapsed = Math.min(
+            Math.max((now - lastTime) / 1000, 0),
+            0.05
         );
 
-        lastFrameTime = now;
+        lastTime = now;
+        accumulator += elapsed;
 
-        const right =
-            heldKeys.has("d") || heldKeys.has("arrowright");
-
-        const left =
-            heldKeys.has("a") || heldKeys.has("arrowleft");
-
-        const direction = Number(right) - Number(left);
-
-        if (direction !== 0) {
-            // Keyboard movement takes priority.
-            playerX += direction * WALK_SPEED * dt;
-            destinationX = null;
-        }
-        else if (destinationX !== null) {
-            // Basic click-to-move along the surface.
-            const delta = destinationX - playerX;
-            const step = WALK_SPEED * dt;
-
-            if (Math.abs(delta) <= step) {
-                playerX = destinationX;
-                destinationX = null;
-            }
-            else {
-                playerX += Math.sign(delta) * step;
-            }
+        // Simulate physics at 60 fixed steps per second.
+        while (accumulator >= FIXED_DT) {
+            update(FIXED_DT);
+            accumulator -= FIXED_DT;
         }
 
-        // Follow the player with the camera.
-        cameraX = playerX * TILE_SIZE - viewWidth * 0.5;
+        cameraX =
+            player.x * TILE_SIZE - viewWidth * 0.5;
+
         cameraY =
-            surfaceAt(playerX) * TILE_SIZE - viewHeight * 0.65;
+            player.y * TILE_SIZE - viewHeight * 0.65;
 
         draw();
 
@@ -234,6 +402,7 @@ export function start(canvas, width, height, tiles) {
 
     function clearKeys() {
         heldKeys.clear();
+        jumpQueued = false;
     }
 
     const resizeObserver = new ResizeObserver(resize);
@@ -246,10 +415,8 @@ export function start(canvas, width, height, tiles) {
     canvas.addEventListener("pointerdown", onPointerDown);
 
     resize();
-
     frameId = requestAnimationFrame(frame);
 
-    // Cleanup when the Blazor component is disposed.
     stopCurrentWorld = () => {
         cancelAnimationFrame(frameId);
         resizeObserver.disconnect();
@@ -257,10 +424,7 @@ export function start(canvas, width, height, tiles) {
         window.removeEventListener("keydown", onKeyDown);
         window.removeEventListener("keyup", onKeyUp);
         window.removeEventListener("blur", clearKeys);
-
-        canvas.removeEventListener(
-            "pointerdown", onPointerDown
-        );
+        canvas.removeEventListener("pointerdown", onPointerDown);
     };
 }
 
