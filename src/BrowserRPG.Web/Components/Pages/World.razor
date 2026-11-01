@@ -49,14 +49,16 @@
         );
 
         WorldGenerator worldGenerator = new WorldGenerator();
-        BlockType[] blocks = worldGenerator.blocks;
+        World world = worldGenerator.World;
+
+        byte[] blockBytes = world.ToByteArray();
 
         await _module.InvokeVoidAsync(
             "start",
             _canvas,
-            WorldGenerator.WIDTH,
-            WorldGenerator.HEIGHT,
-            blocks
+            world.Width,
+            world.Height,
+            blockBytes
         );
     }
 

@@ -3,4 +3,7 @@
     <Project Path="src/BrowserRPG.Core/BrowserRPG.Core.csproj" />
     <Project Path="src/BrowserRPG.Web/BrowserRPG.Web.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/BrowserRPG.Core.Tests/BrowserRPG.Core.Tests.csproj" />
+  </Folder>
 </Solution>

@@ -1,49 +1,40 @@
-namespace BrowserRPG.Core
+namespace BrowserRPG.Core;
+
+public class WorldGenerator
 {
-    public enum BlockType: byte
+    public const int WIDTH = 256;
+    public const int HEIGHT = 256;
+
+    public World World { get; private set; }
+
+    public WorldGenerator()
     {
-        Air = 0,
-        Grass = 1,
-        Dirt = 2,
-        Stone = 3
+        World = new World(WIDTH, HEIGHT);
+        Generate(); 
     }
 
-    public class WorldGenerator
+    private void Generate()
     {
-        public const int WIDTH = 256;
-        public const int HEIGHT = 256;
-
-        public BlockType[] blocks { get; private set; }
-
-        public WorldGenerator()
+        for (int x = 0; x < WIDTH; x++)
         {
-            blocks = new BlockType[WIDTH * HEIGHT];
-            Generate(); 
-        }
+            double angle = 2.0 * Math.PI * x / WIDTH;
 
-        private void Generate()
-        {
-            for (int x = 0; x < WIDTH; x++)
+            int surfaceY = 23 + (int)Math.Round(
+                4 * Math.Sin(angle * 3) +
+                2 * Math.Sin(angle * 7)
+            );
+
+            for (int y = surfaceY; y < HEIGHT; y++)
             {
-                double angle = 2.0 * Math.PI * x / WIDTH;
+                BlockType blockType;
 
-                int surfaceY = 23 + (int)Math.Round(
-                    4 * Math.Sin(angle * 3) +
-                    2 * Math.Sin(angle * 7)
-                );
+                if (y == surfaceY) blockType = BlockType.Grass;
+                else if (y < surfaceY + 5) blockType = BlockType.Dirt;
+                else blockType = BlockType.Stone;
 
-                for (int y = surfaceY; y < HEIGHT; y++)
-                {
-                    BlockType blockType;
-
-                    if (y == surfaceY) blockType = BlockType.Grass;
-                    else if (y < surfaceY + 5) blockType = BlockType.Dirt;
-                    else blockType = BlockType.Stone;
-
-                    blocks[y * WIDTH + x] = blockType;
-                }
+                World.SetBlock(x, y, blockType);
             }
         }
-
     }
+
 }
