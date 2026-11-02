@@ -15,6 +15,14 @@ const EPSILON = 0.0001;
 
 let stopCurrentWorld = null;
 
+let applyBlockChangeHandler = null;
+
+export function applyBlockChange(x, y, blockId) {
+    if (applyBlockChangeHandler !== null) {
+        applyBlockChangeHandler(x, y, blockId);
+    }
+}
+
 let activeTool = "move";
 
 export function setTool(tool) {
@@ -25,7 +33,7 @@ export function setTool(tool) {
     activeTool = tool;
 }
 
-export function start(canvas, width, height, tiles) {
+export function start(canvas, width, height, tiles, dotNetRef) {
     stop();
 
     activeTool = "move";
@@ -39,6 +47,15 @@ export function start(canvas, width, height, tiles) {
     const blocks = new Uint8Array(tiles);
 
     const wrapX = x => ((x % width) + width) % width;
+
+    applyBlockChangeHandler = (x, y, blockId) => {
+
+        if (y < 0 || y >= height) return;
+
+        const index = y * width + wrapX(x);
+
+        blocks[index] = blockId;
+    };
 
     function getBlock(x, y) {
         if (y < 0) return 0;      // Air above world
@@ -185,9 +202,23 @@ export function start(canvas, width, height, tiles) {
         heldKeys.delete(event.key.toLowerCase());
     }
 
-    
+    async function requestBlockEdit(x, y, action) {
+    try {
+        await dotNetRef.invokeMethodAsync(
+            "RequestBlockEdit",
+            x,
+            y,
+            action
+        );
+    }
+    catch (error) {
+        console.error("Block edit request failed:", error);
+    }
+}
+
+
     function onPointerDown(event) {
-        
+
         if (event.pointerType === "mouse" && event.button !== 0) return;
 
         const rect = canvas.getBoundingClientRect();
@@ -239,7 +270,7 @@ export function start(canvas, width, height, tiles) {
             if (activeTool === "mine") {
                 // Replace the selected block with air.
                 if (blocks[index] !== 0) {
-                    blocks[index] = 0;
+                    void requestBlockEdit(tileX, tileY, "mine");
                 }
             }
             else if (activeTool === "place") {
@@ -252,7 +283,7 @@ export function start(canvas, width, height, tiles) {
                     return;
 
                 // Place a dirt block.
-                blocks[index] = 2;
+                void requestBlockEdit(tileX, tileY, "place");
             }
         }
 
@@ -523,8 +554,12 @@ export function start(canvas, width, height, tiles) {
 }
 
 export function stop() {
+
     if (stopCurrentWorld) {
+
         stopCurrentWorld();
         stopCurrentWorld = null;
     }
+
+    applyBlockChangeHandler = null;
 }

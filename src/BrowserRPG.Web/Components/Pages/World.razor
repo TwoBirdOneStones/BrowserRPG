@@ -5,6 +5,7 @@
 @using Microsoft.JSInterop
 @implements IAsyncDisposable
 @inject IJSRuntime JS
+@inject SharedWorldState SharedWorld
 
 <PageTitle>World Prototype - BrowserRPG</PageTitle>
 
@@ -61,16 +62,18 @@
     Multiplayer and persistence are not implemented yet.
 </p>
 
+
 @code {
+    
     private ElementReference _canvas;
     private IJSObjectReference? _module;
+    private DotNetObjectReference<World>? _selfReference;
 
+    private bool _disposed;
     private string _selectedTool = "move";
 
     private Task SelectMoveAsync() => SetToolAsync("move");
-
     private Task SelectMineAsync() => SetToolAsync("mine");
-
     private Task SelectPlaceAsync() => SetToolAsync("place");
 
     private async Task SetToolAsync(string tool)
@@ -83,7 +86,8 @@
         }
     }
 
-    protected override async Task OnAfterRenderAsync(bool firstRender)
+    protected override async Task OnAfterRenderAsync(
+        bool firstRender)
     {
         if (!firstRender)
             return;
@@ -92,33 +96,90 @@
             "import", "./js/world.js"
         );
 
-        WorldGenerator worldGenerator = new WorldGenerator();
-
-        byte[] blockBytes = worldGenerator.World.ToByteArray();
-
+        _selfReference = DotNetObjectReference.Create(this);
 
         await _module.InvokeVoidAsync(
             "start",
             _canvas,
-            worldGenerator.World.Width,
-            worldGenerator.World.Height,
-            blockBytes
+            SharedWorld.Width,
+            SharedWorld.Height,
+            SharedWorld.GetSnapshot(),
+            _selfReference
         );
+
+        SharedWorld.BlockChanged += OnBlockChanged;
+    }
+
+    [JSInvokable]
+    public Task RequestBlockEdit(
+        int x, int y, string action)
+    {
+        if (!_disposed)
+        {
+            SharedWorld.TryEditBlock(x, y, action);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private void OnBlockChanged(BlockChange change)
+    {
+        _ = ForwardBlockChangeAsync(change);
+    }
+
+    private async Task ForwardBlockChangeAsync(
+        BlockChange change)
+    {
+        try
+        {
+            await InvokeAsync(async () =>
+            {
+                if (_disposed || _module is null)
+                    return;
+
+                await _module.InvokeVoidAsync(
+                    "applyBlockChange",
+                    change.X,
+                    change.Y,
+                    (byte)change.Block
+                );
+            });
+        }
+        catch (JSDisconnectedException)
+        {
+            // The browser disconnected.
+        }
+        catch (ObjectDisposedException)
+        {
+            // The component was disposed.
+        }
+        catch (InvalidOperationException) when (_disposed)
+        {
+            // The component's renderer has shut down.
+        }
     }
 
     public async ValueTask DisposeAsync()
     {
-        if (_module is null)
-            return;
+        _disposed = true;
+        SharedWorld.BlockChanged -= OnBlockChanged;
 
         try
         {
-            await _module.InvokeVoidAsync("stop");
-            await _module.DisposeAsync();
+            if (_module is not null)
+            {
+                await _module.InvokeVoidAsync("stop");
+                await _module.DisposeAsync();
+            }
         }
         catch (JSDisconnectedException)
         {
-            // Browser connection has already closed.
+            // The browser connection has closed.
+        }
+        finally
+        {
+            _selfReference?.Dispose();
         }
     }
 }
+
