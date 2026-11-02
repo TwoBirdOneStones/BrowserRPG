@@ -15,8 +15,20 @@ const EPSILON = 0.0001;
 
 let stopCurrentWorld = null;
 
+let activeTool = "move";
+
+export function setTool(tool) {
+    if (!["move", "mine", "place"].includes(tool)) {
+        throw new Error(`Unknown tool: ${tool}`);
+    }
+
+    activeTool = tool;
+}
+
 export function start(canvas, width, height, tiles) {
     stop();
+
+    activeTool = "move";
 
     const ctx = canvas.getContext("2d");
 
@@ -63,6 +75,29 @@ export function start(canvas, width, height, tiles) {
 
         return false;
     }
+
+
+    function blockOverlapsPlayer(tileX, tileY) {
+        const playerLeft = player.x - PLAYER_HALF_WIDTH;
+        const playerRight = player.x + PLAYER_HALF_WIDTH;
+
+        const playerTop = player.y - PLAYER_HEIGHT;
+        const playerBottom = player.y;
+
+        const blockLeft = tileX;
+        const blockRight = tileX + 1;
+
+        const blockTop = tileY;
+        const blockBottom = tileY + 1;
+
+        return (
+            playerLeft < blockRight - EPSILON &&
+            playerRight > blockLeft + EPSILON &&
+            playerTop < blockBottom - EPSILON &&
+            playerBottom > blockTop + EPSILON
+        );
+    }
+
 
     // Find the ground for the initial spawn.
     function findSpawnY(x) {
@@ -150,22 +185,81 @@ export function start(canvas, width, height, tiles) {
         heldKeys.delete(event.key.toLowerCase());
     }
 
+    
     function onPointerDown(event) {
-        if (event.pointerType === "mouse" && event.button !== 0)
-            return;
+        
+        if (event.pointerType === "mouse" && event.button !== 0) return;
 
         const rect = canvas.getBoundingClientRect();
 
-        destinationX = (
+        // Convert screen coordinates into world coordinates.
+        const worldX = (
             event.clientX - rect.left + cameraX
         ) / TILE_SIZE;
 
-        destinationY = (
+        const worldY = (
             event.clientY - rect.top + cameraY
         ) / TILE_SIZE;
 
+        if (activeTool === "move") {
+            destinationX = worldX;
+            destinationY = worldY;
+        }
+        else {
+            // Identify the tile that was clicked.
+            const tileX = Math.floor(worldX);
+            const tileY = Math.floor(worldY);
+
+            // Only permit edits inside the world's height.
+            if (tileY < 0 || tileY >= height)
+                return;
+
+            // Measure distance from the player's center
+            // to the center of the selected tile.
+            const blockCenterX = tileX + 0.5;
+            const blockCenterY = tileY + 0.5;
+
+            const playerCenterY =
+                player.y - PLAYER_HEIGHT / 2;
+
+            const distance = Math.hypot(
+                blockCenterX - player.x,
+                blockCenterY - playerCenterY
+            );
+
+            // Temporary interaction reach: 5 blocks.
+            const MAX_REACH = 5;
+
+            if (distance > MAX_REACH)
+                return;
+
+            const index =
+                tileY * width + wrapX(tileX);
+
+            if (activeTool === "mine") {
+                // Replace the selected block with air.
+                if (blocks[index] !== 0) {
+                    blocks[index] = 0;
+                }
+            }
+            else if (activeTool === "place") {
+                // Only place into empty space.
+                if (blocks[index] !== 0)
+                    return;
+
+                // Don't place inside the player.
+                if (blockOverlapsPlayer(tileX, tileY))
+                    return;
+
+                // Place a dirt block.
+                blocks[index] = 2;
+            }
+        }
+
         canvas.focus();
+        event.preventDefault();
     }
+
 
     // Move on only one axis at a time.
     // Small increments prevent skipping through blocks.

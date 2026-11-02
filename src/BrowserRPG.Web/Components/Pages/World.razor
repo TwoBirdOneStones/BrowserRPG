@@ -16,6 +16,31 @@
     Click or tap to move horizontally toward a destination.
 </p>
 
+<div class="d-flex flex-wrap gap-2 mb-3">
+    <button type="button"
+            class="btn btn-outline-primary"
+            @onclick="SelectMoveAsync">
+        Move
+    </button>
+
+    <button type="button"
+            class="btn btn-outline-primary"
+            @onclick="SelectMineAsync">
+        Mine
+    </button>
+
+    <button type="button"
+            class="btn btn-outline-primary"
+            @onclick="SelectPlaceAsync">
+        Place Dirt
+    </button>
+</div>
+
+<p>
+    Selected tool: <strong>@_selectedTool</strong>
+</p>
+
+
 <canvas
     @ref="_canvas"
     tabindex="0"
@@ -39,6 +64,24 @@
 @code {
     private ElementReference _canvas;
     private IJSObjectReference? _module;
+
+    private string _selectedTool = "move";
+
+    private Task SelectMoveAsync() => SetToolAsync("move");
+
+    private Task SelectMineAsync() => SetToolAsync("mine");
+
+    private Task SelectPlaceAsync() => SetToolAsync("place");
+
+    private async Task SetToolAsync(string tool)
+    {
+        _selectedTool = tool;
+
+        if (_module is not null)
+        {
+            await _module.InvokeVoidAsync("setTool", tool);
+        }
+    }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
