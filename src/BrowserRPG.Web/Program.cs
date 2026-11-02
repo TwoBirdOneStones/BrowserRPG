@@ -7,6 +7,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddRazorComponents().AddInteractiveServerComponents();
 
 builder.Services.AddSingleton(_ => new SharedWorldState(new WorldGenerator().World));
+builder.Services.AddSingleton<PlayerRegistry>();
 
 var app = builder.Build();
 

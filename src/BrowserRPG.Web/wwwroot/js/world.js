@@ -23,6 +23,14 @@ export function applyBlockChange(x, y, blockId) {
     }
 }
 
+let applyPlayersHandler = null;
+
+export function applyPlayers(players, localPlayerId) {
+    if (applyPlayersHandler !== null) {
+        applyPlayersHandler(players, localPlayerId);
+    }
+}
+
 let activeTool = "move";
 
 export function setTool(tool) {
@@ -132,6 +140,15 @@ export function start(canvas, width, height, tiles, dotNetRef) {
         y: findSpawnY(6.5),
         vy: 0,
         grounded: true
+    };
+
+    let remotePlayers = [];
+
+    applyPlayersHandler = (players, localPlayerId) => {
+
+        remotePlayers = players.filter(
+        p => p.id !== localPlayerId
+        );
     };
 
     let destinationX = null;
@@ -404,6 +421,76 @@ export function start(canvas, width, height, tiles, dotNetRef) {
             collides(player.x, player.y + 0.05);
     }
 
+
+function drawRemotePlayers() {
+    for (const other of remotePlayers) {
+        // Choose the closest visual copy across
+        // the horizontal world boundary.
+        const nearestX =
+            other.x +
+            Math.round((player.x - other.x) / width) * width;
+
+        const screenX =
+            nearestX * TILE_SIZE - cameraX;
+
+        const screenY =
+            other.y * TILE_SIZE - cameraY;
+
+        if (
+            screenX < -50 ||
+            screenX > viewWidth + 50
+        ) {
+            continue;
+        }
+
+        const bodyWidth =
+            PLAYER_HALF_WIDTH * 2 * TILE_SIZE;
+
+        const bodyHeight =
+            PLAYER_HEIGHT * TILE_SIZE;
+
+        const left = screenX - bodyWidth / 2;
+        const top = screenY - bodyHeight;
+
+        // Purple body to distinguish remote players.
+        ctx.fillStyle = "#8952c7";
+        ctx.fillRect(
+            left,
+            top + 18,
+            bodyWidth,
+            bodyHeight - 18
+        );
+
+        // Head.
+        ctx.fillStyle = "#e8b78e";
+        ctx.fillRect(left, top, bodyWidth, 18);
+
+        // Eye.
+        ctx.fillStyle = "#292521";
+        ctx.fillRect(
+            left + bodyWidth - 6,
+            top + 7,
+            3,
+            3
+        );
+
+        // Temporary name label.
+        ctx.font = "12px monospace";
+        ctx.textAlign = "center";
+        ctx.fillStyle = "#ffffff";
+
+        ctx.fillText(
+            "Player",
+            screenX,
+            top - 8
+        );
+
+        ctx.textAlign = "start";
+    }
+}
+
+
+
     function draw() {
         ctx.fillStyle = "#8fcbe8";
         ctx.fillRect(0, 0, viewWidth, viewHeight);
@@ -459,6 +546,8 @@ export function start(canvas, width, height, tiles, dotNetRef) {
             );
             ctx.stroke();
         }
+
+        drawRemotePlayers();
 
         // Draw player using its physics position.
         const px = player.x * TILE_SIZE - cameraX;
@@ -539,10 +628,60 @@ export function start(canvas, width, height, tiles, dotNetRef) {
 
     canvas.addEventListener("pointerdown", onPointerDown);
 
+
+    let reportingPosition = false;
+    let lastReportedX = null;
+    let lastReportedY = null;
+
+    const positionTimer = setInterval(async () => {
+        if (reportingPosition)
+            return;
+
+        // The client may use an unwrapped X internally.
+        // Send a normalized world coordinate.
+        const x = wrapX(player.x);
+        const y = player.y;
+
+        // Don't repeatedly send unchanged positions.
+        if (
+            lastReportedX !== null &&
+            Math.abs(x - lastReportedX) < 0.01 &&
+            Math.abs(y - lastReportedY) < 0.01
+        ) {
+            return;
+        }
+
+        reportingPosition = true;
+
+        try {
+            await dotNetRef.invokeMethodAsync(
+                "ReportPosition",
+                x,
+                y
+            );
+
+            lastReportedX = x;
+            lastReportedY = y;
+        }
+        catch (error) {
+            console.error(
+                "Failed to report player position:",
+                error
+            );
+        }
+        finally {
+            reportingPosition = false;
+        }
+    }, 100);
+
+
     resize();
     frameId = requestAnimationFrame(frame);
 
     stopCurrentWorld = () => {
+
+        clearInterval(positionTimer);
+
         cancelAnimationFrame(frameId);
         resizeObserver.disconnect();
 
@@ -562,4 +701,5 @@ export function stop() {
     }
 
     applyBlockChangeHandler = null;
+    applyPlayersHandler = null;
 }
